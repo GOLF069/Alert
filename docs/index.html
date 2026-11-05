@@ -101,7 +101,22 @@ async function load(first) {
     };
   } else { box.className = 'muted'; box.textContent = 'ยังไม่มีสัญญาณ ALL BUY / ALL SELL ในช่วงที่แสดง'; }
 
+  await backfill();
   if (first) { chart.timeScale().fitContent(); connectLive(); }
+}
+
+// เติมแท่งที่ data.json ตามไม่ทัน (ช่วงที่ cron ยังไม่รัน) จาก Binance โดยตรง
+async function backfill() {
+  if (!lastCandle) return;
+  try {
+    const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=200`);
+    if (!r.ok) return;
+    const rows = await r.json();
+    for (const k of rows) {
+      const c = { time: Math.floor(k[0] / 1000) + tzOffset, open: +k[1], high: +k[2], low: +k[3], close: +k[4] };
+      if (c.time >= lastCandle.time) { candles.update(c); lastCandle = c; }
+    }
+  } catch (e) { /* ใช้ข้อมูลจาก data.json ต่อ */ }
 }
 
 // ราคา live จาก Binance WebSocket (อัปเดตแค่แท่งสุดท้าย — สัญญาณคำนวณจาก data.json)
