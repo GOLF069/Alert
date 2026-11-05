@@ -1,0 +1,33 @@
+{
+  "symbol": "PAXGUSDT",
+  "timeframe": "5m",
+  "status_timeframe": "1h",
+  "api_base": "https://data-api.binance.vision",
+  "tz_offset_hours": 7,
+
+  "balance": 50000.0,
+  "risk_percent": 1.0,
+  "rr": 2.0,
+  "units_per_lot": 100,
+  "sl_buffer": 1.0,
+
+  "bb_period": 21,
+  "bb_dev": 1.0,
+  "bb_use_atr": true,
+  "bb_atr_period": 5,
+
+  "ma_type": "EMA",
+  "ma_length": 21,
+  "ma_dev": 1.0,
+  "ma_atr_period": 5,
+
+  "kernel_lookback": 8,
+  "kernel_weight": 1.0,
+  "kernel_level": 20,
+  "kernel_filter": "Smooth",
+
+  "zigzag_length": 13,
+
+  "chart_bars": 500,
+  "recent_bars_to_alert": 2
+}

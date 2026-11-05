@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Signal Chart</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#131920; --text:#cfd8dc; --muted:#78909c; --bull:#00c853; --bear:#e53935; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #wrap { display:flex; flex-direction:column; height:100%; }
+  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; padding:8px 12px;
+    background:var(--panel); border-bottom:1px solid #1e2530; font-size:13px; }
+  header b { font-size:15px; }
+  .pill { padding:2px 8px; border-radius:4px; color:#fff; font-weight:600; font-size:12px; background:#555; }
+  .pill.BULL { background:var(--bull); } .pill.BEAR { background:var(--bear); }
+  .muted { color:var(--muted); }
+  #chart { flex:1; min-height:0; }
+  #trade { padding:6px 12px; background:var(--panel); border-top:1px solid #1e2530; font-size:13px; }
+  #trade span { margin-right:14px; white-space:nowrap; }
+  .buy { color:#00e676 } .sell { color:#ff5252 }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <b id="title">Smart Signal</b>
+    <span>Trend (BB) <span id="s1" class="pill">-</span></span>
+    <span>Trend (MA) <span id="s2" class="pill">-</span></span>
+    <span>Kernel <span id="s3" class="pill">-</span></span>
+    <span class="muted" id="live">live: -</span>
+    <span class="muted" id="upd">-</span>
+  </header>
+  <div id="chart"></div>
+  <div id="trade" class="muted">ยังไม่มีสัญญาณ ALL BUY / ALL SELL</div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const el = document.getElementById('chart');
+const chart = LightweightCharts.createChart(el, {
+  layout: { background: { color: '#0b0f14' }, textColor: '#cfd8dc' },
+  grid: { vertLines: { color: '#161d26' }, horzLines: { color: '#161d26' } },
+  timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#1e2530' },
+  rightPriceScale: { borderColor: '#1e2530' },
+  crosshair: { mode: 0 },
+});
+const candles = chart.addCandlestickSeries({
+  upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+  wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+});
+const trend = chart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+const slLine = { cur: null };
+
+new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
+
+let tzOffset = 0, tf = '5m', symbol = 'PAXGUSDT', lastCandle = null, ws = null;
+
+function setPill(id, v) {
+  const e = document.getElementById(id);
+  e.textContent = v === 'BULL' ? '▲ BULL' : v === 'BEAR' ? '▼ BEAR' : '—';
+  e.className = 'pill ' + v;
+}
+function fmtTime(sec) {
+  const d = new Date(sec * 1000);
+  return d.toISOString().slice(0, 16).replace('T', ' ');
+}
+
+async function load(first) {
+  let d;
+  try {
+    const r = await fetch('data.json?_=' + Date.now(), { cache: 'no-store' });
+    d = await r.json();
+  } catch (e) { document.getElementById('upd').textContent = 'โหลด data.json ไม่ได้'; return; }
+
+  symbol = d.symbol; tf = d.timeframe; tzOffset = d.tz_offset * 3600;
+  document.getElementById('title').textContent = `${d.symbol} · ${d.timeframe}  (Status ${d.status_timeframe})`;
+  document.title = `${d.symbol} Smart Signal`;
+  setPill('s1', d.status['Trend Line (BB)']);
+  setPill('s2', d.status['Trend Line (MA)']);
+  setPill('s3', d.status['Line (Kernel)']);
+  document.getElementById('upd').textContent = 'อัปเดตสัญญาณ ' + fmtTime(d.updated) + ' (UTC+' + d.tz_offset + ')';
+
+  candles.setData(d.candles);
+  trend.setData(d.trend);
+  candles.setMarkers(d.markers);
+  if (d.candles.length) lastCandle = { ...d.candles[d.candles.length - 1] };
+
+  const t = d.last_trade, box = document.getElementById('trade');
+  if (slLine.cur) { candles.removePriceLine(slLine.cur.sl); candles.removePriceLine(slLine.cur.tp); candles.removePriceLine(slLine.cur.en); slLine.cur = null; }
+  if (t) {
+    const cls = t.side === 'buy' ? 'buy' : 'sell';
+    box.className = '';
+    box.innerHTML = `<span class="${cls}"><b>${t.side === 'buy' ? 'ALL BUY' : 'ALL SELL'}</b> ล่าสุด ${fmtTime(t.time)}</span>` +
+      `<span>Entry ${t.entry}</span><span>SL ${t.sl}</span><span>TP ${t.tp}</span><span>Lots ${t.lots}</span><span class="muted">Risk ${t.risk}</span>`;
+    slLine.cur = {
+      en: candles.createPriceLine({ price: t.entry, color: '#ffa726', lineWidth: 1, lineStyle: 2, title: 'Entry' }),
+      sl: candles.createPriceLine({ price: t.sl, color: '#ef5350', lineWidth: 1, lineStyle: 2, title: 'SL' }),
+      tp: candles.createPriceLine({ price: t.tp, color: '#26a69a', lineWidth: 1, lineStyle: 2, title: 'TP' }),
+    };
+  } else { box.className = 'muted'; box.textContent = 'ยังไม่มีสัญญาณ ALL BUY / ALL SELL ในช่วงที่แสดง'; }
+
+  if (first) { chart.timeScale().fitContent(); connectLive(); }
+}
+
+// ราคา live จาก Binance WebSocket (อัปเดตแค่แท่งสุดท้าย — สัญญาณคำนวณจาก data.json)
+function connectLive() {
+  if (ws) try { ws.close(); } catch (e) {}
+  const live = document.getElementById('live');
+  try {
+    ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${tf}`);
+  } catch (e) { live.textContent = 'live: ใช้ไม่ได้'; return; }
+  ws.onopen = () => { live.textContent = 'live: เชื่อมต่อแล้ว'; };
+  ws.onclose = () => { live.textContent = 'live: หลุด (ลองใหม่...)'; setTimeout(connectLive, 5000); };
+  ws.onerror = () => { live.textContent = 'live: ใช้ไม่ได้'; };
+  ws.onmessage = (m) => {
+    const k = JSON.parse(m.data).k;
+    if (!k) return;
+    const c = { time: Math.floor(k.t / 1000) + tzOffset, open: +k.o, high: +k.h, low: +k.l, close: +k.c };
+    if (lastCandle && c.time < lastCandle.time) return;
+    candles.update(c); lastCandle = c;
+  };
+}
+
+load(true);
+setInterval(() => load(false), 60000);
+</script>
+</body>
+</html>
