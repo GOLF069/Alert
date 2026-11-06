@@ -180,6 +180,22 @@ async function startCapitalLive() {
     if (!cst || !tok) { live.textContent = 'live: อ่าน token ไม่ได้ (เบราว์เซอร์อาจซ่อน header จาก CORS)'; return; }
   } catch (e) { live.textContent = 'live: เชื่อมต่อไม่ได้ (อาจติด CORS)'; return; }
 
+  // เติมแท่งที่ data.json ตามไม่ทัน ด้วย REST ของ Capital.com
+  try {
+    const r2 = await fetch(`${capitalBase}/api/v1/prices/${symbol}?resolution=${CAP_RES[tf] || 'MINUTE_5'}&max=120`,
+      { headers: { 'CST': cst, 'X-SECURITY-TOKEN': tok } });
+    if (r2.ok) {
+      const rows = (await r2.json()).prices || [];
+      const mid = (x) => (x.bid + x.ask) / 2;
+      rows.sort((a, b) => a.snapshotTimeUTC < b.snapshotTimeUTC ? -1 : 1);
+      for (const x of rows) {
+        const c = { time: Math.floor(Date.parse(x.snapshotTimeUTC + 'Z') / 1000) + tzOffset,
+          open: mid(x.openPrice), high: mid(x.highPrice), low: mid(x.lowPrice), close: mid(x.closePrice) };
+        if (!lastCandle || c.time >= lastCandle.time) { candles.update(c); lastCandle = c; }
+      }
+    }
+  } catch (e) { console.log('backfill error', e); }
+
   const bar = {};   // เก็บแท่งล่าสุดแยก bid / ask แล้วเฉลี่ยเป็นราคากลาง
   capWs = new WebSocket('wss://api-streaming-capital.backend-capital.com/connect');
   capWs.onopen = () => {
@@ -190,8 +206,9 @@ async function startCapitalLive() {
   capWs.onmessage = (m) => {
     let j; try { j = JSON.parse(m.data); } catch (e) { return; }
     if (j.destination === 'OHLCMarketData.subscribe') { live.textContent = j.status === 'OK' ? 'live: เชื่อมต่อแล้ว (Capital.com)' : 'live: subscribe ไม่สำเร็จ'; return; }
-    if (j.destination !== 'ohlc.event' || !j.payload) return;
+    if (j.destination !== 'ohlc.event' || !j.payload) { console.log('ws msg', j); return; }
     const p = j.payload;
+    live.textContent = 'live: รับราคาล่าสุด ' + new Date().toLocaleTimeString('th-TH') + ' (แท่ง ' + fmtTime(Math.floor(p.t / 1000) + tzOffset).slice(11) + ')';
     bar[p.priceType] = p;
     const sides = [bar.bid, bar.ask].filter(x => x && x.t === p.t);
     if (!sides.length) return;
