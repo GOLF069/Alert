@@ -168,9 +168,12 @@ function getCreds() {
 function setCreds(v) {
   try { v ? localStorage.setItem('cap_creds', JSON.stringify(v)) : localStorage.removeItem('cap_creds'); } catch (e) {}
 }
+let capRun = 0, capTimer = null;
 async function startCapitalLive() {
   const live = document.getElementById('live');
-  if (capWs) { try { capWs.close(); } catch (e) {} capWs = null; }
+  const myRun = ++capRun;   // กันการเรียกซ้อนกัน (กดบันทึกหลายครั้ง / reconnect ชนกัน)
+  if (capTimer) { clearTimeout(capTimer); capTimer = null; }
+  if (capWs) { capWs.onclose = capWs.onerror = capWs.onmessage = null; try { capWs.close(); } catch (e) {} capWs = null; }
   if (capPing) { clearInterval(capPing); capPing = null; }
   const cr = getCreds();
   if (!cr) { live.textContent = 'live: ปิด (กด ⚙ ใส่ key เพื่อดูราคาสด)'; return; }
@@ -187,6 +190,7 @@ async function startCapitalLive() {
     if (!cst || !tok) { live.textContent = 'live: อ่าน token ไม่ได้ (เบราว์เซอร์อาจซ่อน header จาก CORS)'; return; }
   } catch (e) { live.textContent = 'live: เชื่อมต่อไม่ได้ (อาจติด CORS)'; return; }
 
+  if (myRun !== capRun) return;
   // เติมแท่งที่ data.json ตามไม่ทัน ด้วย REST ของ Capital.com
   try {
     const r2 = await fetch(`${capitalBase}/api/v1/prices/${symbol}?resolution=${CAP_RES[tf] || 'MINUTE_5'}&max=120`,
@@ -203,7 +207,7 @@ async function startCapitalLive() {
     }
   } catch (e) { console.log('backfill error', e); }
 
-  const bar = {};   // เก็บแท่งล่าสุดแยก bid / ask แล้วเฉลี่ยเป็นราคากลาง
+  if (myRun !== capRun) return;
   capWs = new WebSocket('wss://api-streaming-capital.backend-capital.com/connect');
   capWs.onopen = () => {
     // ราคาทุก tick (quote) แล้วสร้างแท่งเองจากราคากลาง bid/offer
@@ -228,7 +232,11 @@ async function startCapitalLive() {
     }
     putExtra(c);
   };
-  capWs.onclose = () => { live.textContent = 'live: หลุด (ลองใหม่ใน 10 วิ)'; setTimeout(startCapitalLive, 10000); };
+  capWs.onclose = (ev) => {
+    if (myRun !== capRun) return;
+    live.textContent = 'live: หลุด (code ' + ev.code + ') ลองใหม่ใน 10 วิ';
+    capTimer = setTimeout(startCapitalLive, 10000);
+  };
   capWs.onerror = () => { live.textContent = 'live: ใช้ไม่ได้'; };
 }
 document.getElementById('gear').onclick = () => {
