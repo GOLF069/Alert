@@ -37,4 +37,12 @@ jobs:
           git config user.name "smart-alert-bot"
           git config user.email "bot@users.noreply.github.com"
           git add docs/data.json smart_alert/state.json
-          git diff --cached --quiet || (git commit -m "update data" && git pull --rebase -q && git push)
+          git diff --cached --quiet && exit 0
+          git commit -m "update data"
+          # data.json ถูกสร้างใหม่ทุกรอบ ถ้าชนกันให้ใช้ของรอบนี้ (-X theirs ตอน rebase = commit ของเรา) แล้วลองใหม่
+          for i in 1 2 3 4; do
+            if git pull --rebase -X theirs -q && git push -q; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep 4
+          done
+          exit 1
