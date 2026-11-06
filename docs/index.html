@@ -206,22 +206,26 @@ async function startCapitalLive() {
   const bar = {};   // เก็บแท่งล่าสุดแยก bid / ask แล้วเฉลี่ยเป็นราคากลาง
   capWs = new WebSocket('wss://api-streaming-capital.backend-capital.com/connect');
   capWs.onopen = () => {
-    capWs.send(JSON.stringify({ destination: 'OHLCMarketData.subscribe', correlationId: '1', cst, securityToken: tok,
-      payload: { epics: [symbol], resolutions: [CAP_RES[tf] || 'MINUTE_5'], type: 'classic' } }));
+    // ราคาทุก tick (quote) แล้วสร้างแท่งเองจากราคากลาง bid/offer
+    capWs.send(JSON.stringify({ destination: 'marketData.subscribe', correlationId: '1', cst, securityToken: tok,
+      payload: { epics: [symbol] } }));
     capPing = setInterval(() => { try { capWs.send(JSON.stringify({ destination: 'ping', correlationId: '9', cst, securityToken: tok })); } catch (e) {} }, 300000);
   };
+  const stepSec = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400 }[tf] || 300;
   capWs.onmessage = (m) => {
     let j; try { j = JSON.parse(m.data); } catch (e) { return; }
-    if (j.destination === 'OHLCMarketData.subscribe') { live.textContent = j.status === 'OK' ? 'live: เชื่อมต่อแล้ว (Capital.com)' : 'live: subscribe ไม่สำเร็จ'; return; }
-    if (j.destination !== 'ohlc.event' || !j.payload) { console.log('ws msg', j); return; }
-    const p = j.payload;
-    live.textContent = 'live: รับราคาล่าสุด ' + new Date().toLocaleTimeString('th-TH') + ' (แท่ง ' + fmtTime(Math.floor(p.t / 1000) + tzOffset).slice(11) + ')';
-    bar[p.priceType] = p;
-    const sides = [bar.bid, bar.ask].filter(x => x && x.t === p.t);
-    if (!sides.length) return;
-    const avg = (f) => sides.reduce((a, x) => a + x[f], 0) / sides.length;
-    const c = { time: Math.floor(p.t / 1000) + tzOffset, open: avg('o'), high: avg('h'), low: avg('l'), close: avg('c') };
-    if (lastCandle && c.time < lastCandle.time) return;
+    if (j.destination === 'marketData.subscribe') { live.textContent = j.status === 'OK' ? 'live: เชื่อมต่อแล้ว (Capital.com) รอราคา...' : 'live: subscribe ไม่สำเร็จ'; return; }
+    if (j.destination !== 'quote' || !j.payload || j.payload.epic !== symbol) { if (j.destination !== 'ping') console.log('ws msg', j); return; }
+    const p = j.payload, px = (p.bid + p.ofr) / 2, ts = Math.floor(p.timestamp / 1000);
+    const bucket = Math.floor(ts / stepSec) * stepSec + tzOffset;
+    live.textContent = 'live: ' + px.toFixed(2) + ' @ ' + new Date().toLocaleTimeString('th-TH');
+    if (lastCandle && bucket < lastCandle.time) return;
+    let c;
+    if (lastCandle && bucket === lastCandle.time) {
+      c = { time: bucket, open: lastCandle.open, high: Math.max(lastCandle.high, px), low: Math.min(lastCandle.low, px), close: px };
+    } else {
+      c = { time: bucket, open: px, high: px, low: px, close: px };   // แท่งใหม่
+    }
     putExtra(c);
   };
   capWs.onclose = () => { live.textContent = 'live: หลุด (ลองใหม่ใน 10 วิ)'; setTimeout(startCapitalLive, 10000); };
