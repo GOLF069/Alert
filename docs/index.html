@@ -65,6 +65,8 @@ const slLine = { cur: null };
 new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
 
 let tzOffset = 0, tf = '5m', symbol = 'PAXGUSDT', source = 'binance', lastCandle = null, ws = null;
+const extra = new Map();   // แท่งที่มาจาก REST/WebSocket (ใหม่กว่า data.json)
+function putExtra(c) { extra.set(c.time, c); candles.update(c); lastCandle = c; }
 let capitalBase = 'https://demo-api-capital.backend-capital.com', capWs = null, capPing = null;
 const CAP_RES = { '1m':'MINUTE','5m':'MINUTE_5','15m':'MINUTE_15','30m':'MINUTE_30','1h':'HOUR','4h':'HOUR_4','1d':'DAY' };
 
@@ -97,6 +99,11 @@ async function load(first) {
   trend.setData(d.trend);
   candles.setMarkers(d.markers);
   if (d.candles.length) lastCandle = { ...d.candles[d.candles.length - 1] };
+  // ใส่แท่งสด (ที่ใหม่กว่า data.json) กลับเข้าไป ไม่งั้นจะหายทุกครั้งที่รีโหลดข้อมูล
+  const lastT = lastCandle ? lastCandle.time : 0;
+  for (const t of [...extra.keys()].sort((a, b) => a - b)) {
+    if (t >= lastT) { candles.update(extra.get(t)); lastCandle = extra.get(t); } else extra.delete(t);
+  }
 
   const t = d.last_trade, box = document.getElementById('trade');
   if (slLine.cur) { candles.removePriceLine(slLine.cur.sl); candles.removePriceLine(slLine.cur.tp); candles.removePriceLine(slLine.cur.en); slLine.cur = null; }
@@ -191,7 +198,7 @@ async function startCapitalLive() {
       for (const x of rows) {
         const c = { time: Math.floor(Date.parse(x.snapshotTimeUTC + 'Z') / 1000) + tzOffset,
           open: mid(x.openPrice), high: mid(x.highPrice), low: mid(x.lowPrice), close: mid(x.closePrice) };
-        if (!lastCandle || c.time >= lastCandle.time) { candles.update(c); lastCandle = c; }
+        if (!lastCandle || c.time >= lastCandle.time) putExtra(c);
       }
     }
   } catch (e) { console.log('backfill error', e); }
@@ -215,7 +222,7 @@ async function startCapitalLive() {
     const avg = (f) => sides.reduce((a, x) => a + x[f], 0) / sides.length;
     const c = { time: Math.floor(p.t / 1000) + tzOffset, open: avg('o'), high: avg('h'), low: avg('l'), close: avg('c') };
     if (lastCandle && c.time < lastCandle.time) return;
-    candles.update(c); lastCandle = c;
+    putExtra(c);
   };
   capWs.onclose = () => { live.textContent = 'live: หลุด (ลองใหม่ใน 10 วิ)'; setTimeout(startCapitalLive, 10000); };
   capWs.onerror = () => { live.textContent = 'live: ใช้ไม่ได้'; };
