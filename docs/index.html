@@ -31,7 +31,16 @@
     <span>Kernel <span id="s3" class="pill">-</span></span>
     <span class="muted" id="live">live: -</span>
     <span class="muted" id="upd">-</span>
+    <button id="gear" title="ตั้งค่า Capital.com live" style="margin-left:auto;background:#1e2530;color:#cfd8dc;border:0;border-radius:4px;padding:3px 9px;cursor:pointer">⚙ live</button>
   </header>
+  <div id="cfgbox" style="display:none;padding:8px 12px;background:#10161d;border-bottom:1px solid #1e2530;font-size:13px">
+    <div class="muted" style="margin-bottom:6px">ใส่ key ของ Capital.com เพื่อดูราคาสด (เก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ไม่ส่งไปที่อื่นนอกจาก Capital.com)</div>
+    <input id="k_key" placeholder="API key" style="width:200px">
+    <input id="k_id" placeholder="อีเมล (identifier)" style="width:200px">
+    <input id="k_pw" type="password" placeholder="API key custom password" style="width:200px">
+    <button id="k_save">บันทึกและเชื่อมต่อ</button>
+    <button id="k_clear">ลบ</button>
+  </div>
   <div id="chart"></div>
   <div id="trade" class="muted">ยังไม่มีสัญญาณ ALL BUY / ALL SELL</div>
 </div>
@@ -55,7 +64,9 @@ const slLine = { cur: null };
 
 new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
 
-let tzOffset = 0, tf = '5m', symbol = 'PAXGUSDT', lastCandle = null, ws = null;
+let tzOffset = 0, tf = '5m', symbol = 'PAXGUSDT', source = 'binance', lastCandle = null, ws = null;
+let capitalBase = 'https://demo-api-capital.backend-capital.com', capWs = null, capPing = null;
+const CAP_RES = { '1m':'MINUTE','5m':'MINUTE_5','15m':'MINUTE_15','30m':'MINUTE_30','1h':'HOUR','4h':'HOUR_4','1d':'DAY' };
 
 function setPill(id, v) {
   const e = document.getElementById(id);
@@ -74,7 +85,7 @@ async function load(first) {
     d = await r.json();
   } catch (e) { document.getElementById('upd').textContent = 'โหลด data.json ไม่ได้'; return; }
 
-  symbol = d.symbol; tf = d.timeframe; tzOffset = d.tz_offset * 3600;
+  symbol = d.symbol; source = d.source || 'binance'; tf = d.timeframe; tzOffset = d.tz_offset * 3600;
   document.getElementById('title').textContent = `${d.symbol} · ${d.timeframe}  (Status ${d.status_timeframe})`;
   document.title = `${d.symbol} Smart Signal`;
   setPill('s1', d.status['Trend Line (BB)']);
@@ -101,8 +112,13 @@ async function load(first) {
     };
   } else { box.className = 'muted'; box.textContent = 'ยังไม่มีสัญญาณ ALL BUY / ALL SELL ในช่วงที่แสดง'; }
 
-  await backfill();
-  if (first) { chart.timeScale().fitContent(); connectLive(); }
+  capitalBase = d.capital_base || capitalBase;
+  if (source === 'binance') await backfill();
+  if (first) {
+    chart.timeScale().fitContent();
+    if (source === 'binance') connectLive();
+    else startCapitalLive();
+  }
 }
 
 // เติมแท่งที่ data.json ตามไม่ทัน (ช่วงที่ cron ยังไม่รัน) จาก Binance โดยตรง
@@ -137,6 +153,66 @@ function connectLive() {
     candles.update(c); lastCandle = c;
   };
 }
+
+// ---------- Capital.com live (ใช้ key ที่กรอกในเบราว์เซอร์ ไม่เก็บใน repo) ----------
+function getCreds() {
+  try { return JSON.parse(localStorage.getItem('cap_creds') || 'null'); } catch (e) { return null; }
+}
+function setCreds(v) {
+  try { v ? localStorage.setItem('cap_creds', JSON.stringify(v)) : localStorage.removeItem('cap_creds'); } catch (e) {}
+}
+async function startCapitalLive() {
+  const live = document.getElementById('live');
+  if (capWs) { try { capWs.close(); } catch (e) {} capWs = null; }
+  if (capPing) { clearInterval(capPing); capPing = null; }
+  const cr = getCreds();
+  if (!cr) { live.textContent = 'live: ปิด (กด ⚙ ใส่ key เพื่อดูราคาสด)'; return; }
+  live.textContent = 'live: กำลังล็อกอิน...';
+  let cst, tok;
+  try {
+    const r = await fetch(capitalBase + '/api/v1/session', {
+      method: 'POST',
+      headers: { 'X-CAP-API-KEY': cr.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: cr.id, password: cr.pw }),
+    });
+    if (!r.ok) { live.textContent = 'live: ล็อกอินไม่ผ่าน (' + r.status + ') ตรวจ key/รหัส'; return; }
+    cst = r.headers.get('CST'); tok = r.headers.get('X-SECURITY-TOKEN');
+    if (!cst || !tok) { live.textContent = 'live: อ่าน token ไม่ได้ (เบราว์เซอร์อาจซ่อน header จาก CORS)'; return; }
+  } catch (e) { live.textContent = 'live: เชื่อมต่อไม่ได้ (อาจติด CORS)'; return; }
+
+  const bar = {};   // เก็บแท่งล่าสุดแยก bid / ask แล้วเฉลี่ยเป็นราคากลาง
+  capWs = new WebSocket('wss://api-streaming-capital.backend-capital.com/connect');
+  capWs.onopen = () => {
+    capWs.send(JSON.stringify({ destination: 'OHLCMarketData.subscribe', correlationId: '1', cst, securityToken: tok,
+      payload: { epics: [symbol], resolutions: [CAP_RES[tf] || 'MINUTE_5'], type: 'classic' } }));
+    capPing = setInterval(() => { try { capWs.send(JSON.stringify({ destination: 'ping', correlationId: '9', cst, securityToken: tok })); } catch (e) {} }, 300000);
+  };
+  capWs.onmessage = (m) => {
+    let j; try { j = JSON.parse(m.data); } catch (e) { return; }
+    if (j.destination === 'OHLCMarketData.subscribe') { live.textContent = j.status === 'OK' ? 'live: เชื่อมต่อแล้ว (Capital.com)' : 'live: subscribe ไม่สำเร็จ'; return; }
+    if (j.destination !== 'ohlc.event' || !j.payload) return;
+    const p = j.payload;
+    bar[p.priceType] = p;
+    const sides = [bar.bid, bar.ask].filter(x => x && x.t === p.t);
+    if (!sides.length) return;
+    const avg = (f) => sides.reduce((a, x) => a + x[f], 0) / sides.length;
+    const c = { time: Math.floor(p.t / 1000) + tzOffset, open: avg('o'), high: avg('h'), low: avg('l'), close: avg('c') };
+    if (lastCandle && c.time < lastCandle.time) return;
+    candles.update(c); lastCandle = c;
+  };
+  capWs.onclose = () => { live.textContent = 'live: หลุด (ลองใหม่ใน 10 วิ)'; setTimeout(startCapitalLive, 10000); };
+  capWs.onerror = () => { live.textContent = 'live: ใช้ไม่ได้'; };
+}
+document.getElementById('gear').onclick = () => {
+  const b = document.getElementById('cfgbox'); b.style.display = b.style.display === 'none' ? 'block' : 'none';
+};
+document.getElementById('k_save').onclick = () => {
+  setCreds({ key: k_key.value.trim(), id: k_id.value.trim(), pw: k_pw.value });
+  document.getElementById('cfgbox').style.display = 'none'; startCapitalLive();
+};
+document.getElementById('k_clear').onclick = () => {
+  setCreds(null); k_key.value = k_id.value = k_pw.value = ''; startCapitalLive();
+};
 
 load(true);
 setInterval(() => load(false), 60000);

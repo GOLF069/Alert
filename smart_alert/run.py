@@ -40,6 +40,49 @@ def fetch_klines(symbol, interval, limit=1000):
     }
 
 
+CAP_RES = {"1m": "MINUTE", "5m": "MINUTE_5", "15m": "MINUTE_15", "30m": "MINUTE_30",
+           "1h": "HOUR", "4h": "HOUR_4", "1d": "DAY"}
+
+
+def capital_login():
+    """เปิด session ของ Capital.com (ต้องมี CAPITAL_API_KEY / CAPITAL_IDENTIFIER / CAPITAL_PASSWORD)"""
+    key, ident, pw = (os.getenv("CAPITAL_API_KEY"), os.getenv("CAPITAL_IDENTIFIER"),
+                      os.getenv("CAPITAL_PASSWORD"))
+    if not (key and ident and pw):
+        raise SystemExit("ไม่พบ CAPITAL_API_KEY / CAPITAL_IDENTIFIER / CAPITAL_PASSWORD ใน Secrets")
+    base = CFG.get("capital_base", "https://demo-api-capital.backend-capital.com")
+    r = requests.post(f"{base}/api/v1/session",
+                      headers={"X-CAP-API-KEY": key, "Content-Type": "application/json"},
+                      json={"identifier": ident, "password": pw}, timeout=20)
+    if not r.ok:
+        raise SystemExit(f"Capital login ล้มเหลว {r.status_code}: {r.text[:200]}")
+    return base, {"CST": r.headers["CST"], "X-SECURITY-TOKEN": r.headers["X-SECURITY-TOKEN"]}
+
+
+def fetch_capital(epic, interval, auth, limit=1000):
+    base, hdr = auth
+    r = requests.get(f"{base}/api/v1/prices/{epic}", headers=hdr, timeout=20,
+                     params={"resolution": CAP_RES[interval], "max": limit})
+    r.raise_for_status()
+    rows = r.json()["prices"]
+    from datetime import datetime, timezone
+
+    def ts(x):
+        return int(datetime.fromisoformat(x["snapshotTimeUTC"]).replace(tzinfo=timezone.utc).timestamp())
+
+    def mid(x, f):  # ใช้ราคากลาง bid/ask
+        return (float(x[f]["bid"]) + float(x[f]["ask"])) / 2
+
+    rows.sort(key=ts)
+    return {
+        "t": np.array([ts(x) for x in rows], dtype=np.int64),
+        "o": np.array([mid(x, "openPrice") for x in rows]),
+        "h": np.array([mid(x, "highPrice") for x in rows]),
+        "l": np.array([mid(x, "lowPrice") for x in rows]),
+        "c": np.array([mid(x, "closePrice") for x in rows]),
+    }
+
+
 def demo_klines(interval, n=1000, seed=7):
     rng = np.random.default_rng(seed + TF_SEC[interval])
     step = TF_SEC[interval]
@@ -144,8 +187,14 @@ def main():
     demo = "--demo" in sys.argv
     tf, stf, sym = CFG["timeframe"], CFG["status_timeframe"], CFG["symbol"]
 
+    source = CFG.get("source", "binance")
     if demo:
         k_all, kh = demo_klines(tf), demo_klines(stf)
+    elif source == "capital":
+        auth = capital_login()
+        sym = CFG["capital_epic"]
+        CFG["symbol"] = sym
+        k_all, kh = fetch_capital(sym, tf, auth), fetch_capital(sym, stf, auth)
     else:
         k_all, kh = fetch_klines(sym, tf), fetch_klines(sym, stf)
 
@@ -207,7 +256,8 @@ def main():
         return "BULL" if d == 1 else "BEAR" if d == -1 else "-"
 
     data = {
-        "symbol": sym, "timeframe": tf, "status_timeframe": stf,
+        "symbol": sym, "source": "binance" if (demo or source == "binance") else source,
+        "capital_base": CFG.get("capital_base"), "timeframe": tf, "status_timeframe": stf,
         "updated": int(time.time()) + off, "tz_offset": CFG["tz_offset_hours"],
         "status": {"Trend Line (BB)": label(r["st_last"][0]),
                    "Trend Line (MA)": label(r["st_last"][1]),
