@@ -7,7 +7,7 @@
   "status_timeframe": "1h",
   "api_base": "https://data-api.binance.vision",
   "tz_offset_hours": 7,
-  "balance": 50000.0,
+  "balance": 25000.0,
   "risk_percent": 1.0,
   "rr": 2.0,
   "units_per_lot": 100,
